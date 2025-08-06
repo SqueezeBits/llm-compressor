@@ -25,6 +25,7 @@ from llmcompressor.modifiers import Modifier
 from llmcompressor.modifiers.utils.hooks import HooksMixin
 from llmcompressor.utils.helpers import calibration_forward_context, patch_attr
 from llmcompressor.utils.pytorch.module import get_no_split_params
+from llmcompressor.rbln import RBLNSubgraph
 
 from .ast_helpers import autowrap_forwards
 
@@ -54,6 +55,7 @@ class Subgraph:
     input_names: Set[str]
     consumed_names: Set[str]
     _code: Optional[PythonCode] = None
+    graph_module: GraphModule | None = None
 
     def forward(self, *args, **kwargs) -> Dict[str, Any]:
         """
@@ -355,10 +357,16 @@ def partition_graph(model: Module, partitions: List[List[Node]]) -> List[Subgrap
 
         # save the subgraph for this partition
         graph.lint()
+        graph_module = GraphModule(model, graph)
         input_names = set(node.name for node in graph.nodes if node.op == "placeholder")
         subgraphs.append(
             Subgraph(
                 graph=graph,
+                input_names=input_names,
+                consumed_names=set(),  # populated later
+            ) if not hasattr(torch, "rbln") \
+            else RBLNSubgraph(
+                graph_module=graph_module,
                 input_names=input_names,
                 consumed_names=set(),  # populated later
             )
@@ -527,6 +535,8 @@ def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
 
     if torch.cuda.is_available():
         offloaded_dispatch(model, execution_device=torch.device("cuda:0"))
+    elif hasattr(torch, "rbln"):
+        offloaded_dispatch(model, execution_device=torch.device("rbln"))
     else:
         logger.warning("CUDA is not available! Compressing model on CPU instead")
 

@@ -144,7 +144,7 @@ def format_calibration_data(
         if do_shuffle
         else SequentialSampler(tokenized_calibration),
         "collate_fn": collate_fn,
-        "pin_memory": True,
+        "pin_memory": False if hasattr(torch, "rbln") else True,
     }
 
     calibration_dataloader = DataLoader(tokenized_calibration, **dataloader_params)

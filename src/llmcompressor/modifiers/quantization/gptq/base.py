@@ -1,5 +1,6 @@
 import contextlib
 import warnings
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -252,7 +253,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
 
             logger.info(f"Quantizing {name} using {num_samples} samples")
             with torch.no_grad(), align_module_device(
-                module
+                module, execution_device=torch.device("cpu") if os.environ.get("OFFLOAD_COMPRESSION", "0") == "1" else None
             ), self._maybe_onload_hessian(module), CompressionLogger(
                 module
             ) as comp_logger:

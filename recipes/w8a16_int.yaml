@@ -1,0 +1,22 @@
+default_stage:
+  default_modifiers:
+    GPTQModifier:
+      scheme: W8A16
+      targets: Linear
+      ignore: [lm_head]
+      offload_hessians: false
+
+# Same as below
+# quantization_stage:
+#   quantization_modifiers:
+#     GPTQModifier:
+#       ignore: ["lm_head"]
+#       config_groups:
+#         group_0:
+#           targets: ["Linear"]
+#           weights:
+#             num_bits: 8
+#             type: "int"
+#             symmetric: true
+#             strategy: "channel"
+#             dynamic: false

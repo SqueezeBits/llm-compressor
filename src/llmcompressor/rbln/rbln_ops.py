@@ -31,6 +31,11 @@ def replace(original_func: Callable | list[Callable]):
 
     return decorator
 
+def torch_sqrt(x: torch.Tensor, *, out: torch.Tensor | None = None):
+    """
+    Custom implementation of torch.sqrt.
+    """
+    return torch.pow(x, 0.5)
 
 @replace(torch.amin)
 def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: bool = False, *, out: torch.Tensor | None = None):

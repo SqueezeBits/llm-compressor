@@ -458,7 +458,8 @@ class AWQModifier(Modifier, QuantizationMixin):
                 weight = torch.cat([bl.weight for bl in balance_layers], dim=0)
                 org_shape = weight.shape
                 # The weights are reshaped to be organised by quantization group
-                weight = weight.view(-1, self._group_size)
+                if self._group_size is not None:
+                    weight = weight.view(-1, self._group_size)
                 # Calculates the relative magnitude of the weights within
                 # each of the quantization groups, and rescales each group
                 # individually so that each group has weights on a 0-1 scale.
@@ -611,7 +612,7 @@ class AWQModifier(Modifier, QuantizationMixin):
                         w=linear.weight.data,
                         symmetric=self._symmetric,
                         bit_width=self._num_bits,
-                        group_size=self._group_size,
+                        group_size=self._group_size if self._group_size is not None else -1,
                     )[0]
                     / _scalesview,
                 )

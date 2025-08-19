@@ -10,6 +10,8 @@ from llmcompressor import oneshot
 RECIPES = {
     "w8a16_int_gptq": "recipes/w8a16_int_gptq.yaml",
     "w4a16_int_gptq": "recipes/w4a16_int_gptq.yaml",
+    "w8a16_int_awq": "recipes/w8a16_int_awq.yaml",
+    "w4a16_int_awq": "recipes/w4a16_int_awq.yaml",
 }
 
 class ALG(Enum):

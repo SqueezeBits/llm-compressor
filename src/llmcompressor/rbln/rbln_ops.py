@@ -1,4 +1,3 @@
-import os
 from typing import Callable
 
 import torch
@@ -6,9 +5,6 @@ import torch
 
 def replace(original_func: Callable | list[Callable]):
     def decorator(custom_func: Callable):
-        if os.getenv("USE_CUSTOM_OPS", "0") != "1":
-            return custom_func
-
         if not isinstance(original_func, list):
             func_list = [original_func]
         else:

@@ -4,7 +4,7 @@ default_stage:
       scheme: W8A16
       targets: Linear
       ignore: [lm_head]
-      offload_hessians: false
+      offload_hessians: true
 
 # Same as below
 # quantization_stage:

@@ -11,4 +11,4 @@ default_stage:
             symmetric: true
             strategy: channel
             dynamic: false
-      offload_hessians: false
+      offload_hessians: true

@@ -1,5 +1,6 @@
 import math
 from copy import copy
+import os
 from typing import Dict, Optional, Tuple, Union
 
 import torch
@@ -16,115 +17,11 @@ from llmcompressor.modifiers.utils import SPARSITY_THRESHOLD
 from llmcompressor.observers.base import Observer
 from llmcompressor.pytorch.utils.helpers import tensor_sparsity
 
+# GPTQ_PRECISION = torch.float16 if hasattr(torch, "rbln") and os.environ.get("OFFLOAD_COMPRESSION", "0") == "0" else torch.float32
 GPTQ_PRECISION = torch.float32
 
 __all__ = ["make_empty_hessian", "accumulate_hessian", "quantize_weight"]
 
-def _gram_cols(B: torch.Tensor, row_chunk: int = 64) -> torch.Tensor:
-    """
-    Compute B^T B without @, using chunked outer-product accumulation to avoid
-    materializing (n, d, d). Safe for large n.
-      (B^T B) = sum_over_rows r_k^T r_k
-    """
-    if B.ndim != 2:
-        raise ValueError("B must be 2D")
-    n, d = B.shape
-    G = B.new_zeros((d, d))
-    for s in range(0, n, row_chunk):
-        blk = B[s : s + row_chunk]              # (m, d)
-        # (m,d,1) * (m,1,d) -> (m,d,d); sum over m -> (d,d)
-        G = G + (blk.unsqueeze(2) * blk.unsqueeze(1)).sum(dim=0)
-    return G
-
-def _gram_rows(B: torch.Tensor, col_chunk: int = 64) -> torch.Tensor:
-    """
-    Compute B B^T without @, using chunked outer-product accumulation to avoid
-    materializing (n, n, d). Safe for large d.
-      (B B^T) = sum_over_cols c_k c_k^T
-    """
-    if B.ndim != 2:
-        raise ValueError("B must be 2D")
-    n, d = B.shape
-    G = B.new_zeros((n, n))
-    for s in range(0, d, col_chunk):
-        blk = B[:, s : s + col_chunk]           # (n, m)
-        # (n,1,m) * (1,n,m) -> (n,n,m); sum over m -> (n,n)
-        G = G + (blk.unsqueeze(1) * blk.unsqueeze(0)).sum(dim=2)
-    return G
-
-def torch_cholesky(x: torch.Tensor, upper: bool = False):
-    """
-    Cholesky (Banachiewicz, lower) without torch.linalg.
-    If upper=True, returns the upper factor by transpose.
-    """
-    if x.ndim != 2 or x.shape[0] != x.shape[1]:
-        raise ValueError("x must be a square 2D tensor")
-
-    A = x.clone().contiguous()
-    n = A.shape[0]
-
-    for i in range(n):
-        if i > 0:
-            # diag update: sqrt(a_ii - sum_{k<i} a_{ik}^2)
-            s = torch.sum(A[i, :i] * A[i, :i], dim = 0) #torch.dot(A[i, :i], A[i, :i])
-            A[i, i] = torch.pow(A[i, i] - s, 0.5) #torch.sqrt(A[i, i] - s)
-        else:
-            A[i, i] = torch.pow(A[i, i], 0.5) #torch.sqrt(A[i, i])
-
-        if i + 1 < n:
-            if i > 0:
-                # below-diagonal column update (vectorized):
-                # A[i+1:, i] = (A[i+1:, i] - A[i+1:, :i] @ A[i, :i]) / A[i, i]
-                t = torch.sum(A[i + 1:, :i] * A[i, :i], dim = 1) #A[i + 1:, :i] @ A[i, :i]
-                A[i + 1:, i] = (A[i + 1:, i] - t) / A[i, i]
-            else:
-                A[i + 1:, i] = A[i + 1:, i] / A[i, i]
-
-    L = torch.tril(A)
-    return L.T if upper else L
-
-def torch_cholesky_inverse(x: torch.Tensor, upper: bool = False):
-    """
-    Invert via triangular-inverse then sandwich, without torch.linalg / sqrt / dot / @.
-    A^{-1} = L^{-T} L^{-1}  (lower),  A^{-1} = U^{-1} U^{-T} (upper)
-    """
-    if x.ndim != 2 or x.shape[0] != x.shape[1]:
-        raise ValueError("x must be a square 2D tensor")
-
-    n = x.shape[0]
-
-    if not upper:
-        # x = L (lower)
-        L = torch.tril(x).contiguous()
-        Linv = torch.zeros_like(L)
-
-        for i in range(n):
-            if i > 0:
-                # Linv[i, :i] = - (L[i, :i] @ Linv[:i, :i]) / L[i, i]
-                # -> (i,) = sum_k L[i,k] * Linv[k,:]  (벡터화)
-                t = (L[i, :i].unsqueeze(1) * Linv[:i, :i]).sum(dim=0)  # (i,)
-                Linv[i, :i] = - t / L[i, i]
-            Linv[i, i] = torch.pow(L[i, i], -1) #L[i, i].reciprocal()
-
-        # A^{-1} = L^{-T} L^{-1} = (Linv^T) * Linv  (Gram of columns)
-        #return (Linv.unsqueeze(2) * Linv.unsqueeze(1)).sum(dim=0)
-        return _gram_cols(Linv, 64)
-    else:
-        # x = U (upper)
-        U = torch.triu(x).contiguous()
-        Uinv = torch.zeros_like(U)
-
-        for i in range(n - 1, -1, -1):
-            if i + 1 < n:
-                # Uinv[i, i+1:] = - (U[i, i+1:] @ Uinv[i+1:, i+1:]) / U[i, i]
-                r = U[i, i + 1:]                      # (m,)
-                M = Uinv[i + 1:, i + 1:]              # (m,m) upper-tri
-                t = (r.unsqueeze(1) * M).sum(dim=0)   # (m,)
-                Uinv[i, i + 1:] = - t / U[i, i]
-            Uinv[i, i] = torch.pow(U[i, i], -1) #U[i, i].reciprocal()
-
-        # A^{-1} = U^{-1} U^{-T} = Uinv * (Uinv^T)  (Gram of rows)
-        return _gram_rows(Uinv, 64)
 
 def make_empty_hessian(
     module: torch.nn.Module, device: Optional[torch.device] = None
@@ -165,6 +62,7 @@ def accumulate_hessian(
 
     H *= num_samples / (num_samples + num_added)
     num_samples += num_added
+
     inp = inp.to(dtype=GPTQ_PRECISION)
     inp = math.sqrt(2 / num_samples) * inp
     H += inp.matmul(inp.t())
@@ -261,11 +159,9 @@ def quantize_weight(
         damp = percdamp * torch.mean(torch.diag(H))
         diag = torch.arange(H.shape[0], device=H.device)
         H[diag, diag] += damp
-
-        H = torch_cholesky(H)
-        H = torch_cholesky_inverse(H)
-        H = torch_cholesky(H, upper=True)
-
+        H = torch.linalg.cholesky(H)
+        H = torch.cholesky_inverse(H)
+        H = torch.linalg.cholesky(H, upper=True)
         Hinv = H
     except torch._C._LinAlgError:
         logger.warning(

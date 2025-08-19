@@ -28,8 +28,7 @@ from llmcompressor.pipelines.cache import IntermediatesCache
 from llmcompressor.utils.fsdp.helpers import get_fsdp_parent
 from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_layer_by_name
-from llmcompressor.rbln.rbln_ops import torch_amax, torch_sqrt, torch_amin, torch_round
-
+from llmcompressor.rbln.rbln_ops import torch_sqrt
 
 __all__ = ["AWQModifier"]
 
@@ -464,8 +463,7 @@ class AWQModifier(Modifier, QuantizationMixin):
                 # each of the quantization groups, and rescales each group
                 # individually so that each group has weights on a 0-1 scale.
                 weight.abs_()
-                #weight.div_(weight.amax(dim=1, keepdim=True) + 1e-6)
-                weight.div_(torch_amax(weight, dim=1, keepdims=True) + 1e-6)
+                weight.div_(weight.amax(dim=1, keepdim=True) + 1e-6)
                 # Resizes the rescaled weight matrix back up to its original dimensions
                 weight = weight.view(org_shape)
                 # Gets the average rescaled magnitude for each output channel
@@ -594,8 +592,8 @@ class AWQModifier(Modifier, QuantizationMixin):
                 )
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
-            #scales = scales / (scales.max() * scales.min()).sqrt()
-            scales = scales/ torch_sqrt(scales.max() * scales.min())
+            # scales = scales / (scales.max() * scales.min()).sqrt()
+            scales = scales / torch_sqrt(scales.max() * scales.min()) #TODO(minkyu): Fix inifinite loop when using torch_sqrt with replace patch decorator.
             _scalesview = scales.view(1, -1).to(device)
 
             # avoid scaling values that overflow
@@ -698,32 +696,25 @@ def _pseudo_quantize_tensor(
 
     # zero point quantization
     if not symmetric:
-        #max_val = w.amax(dim=1, keepdim=True)
-        #min_val = w.amin(dim=1, keepdim=True)
-        max_val = torch_amax(w, dim=1, keepdims=True)
-        min_val = torch_amin(w, dim=1, keepdims=True)
+        max_val = w.amax(dim=1, keepdim=True)
+        min_val = w.amin(dim=1, keepdim=True)
         max_int = 2**bit_width - 1
         min_int = 0
         scales = (max_val - min_val).clamp(min=1e-5) / max_int
-        # zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
-        # w = (
-        #     torch.clamp(torch.round(w / scales) + zeros, min_int, max_int) - zeros
-        # ) * scales
-        zeros = (-torch_round(min_val / scales)).clamp_(min_int, max_int)
+        zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
         w = (
-            torch.clamp(torch_round(w / scales) + zeros, min_int, max_int) - zeros
+            torch.clamp(torch.round(w / scales) + zeros, min_int, max_int) - zeros
         ) * scales
         zeros = (zeros - 2 ** (bit_width - 1)).view(org_w_shape[0], -1)
     else:
-        #max_val = w.abs().amax(dim=1, keepdim=True)
-        max_val = torch_amax(w.abs(), dim=1, keepdims=True)
+        max_val = w.abs().amax(dim=1, keepdim=True)
         max_val = max_val.clamp(min=1e-5)
         max_int = 2 ** (bit_width - 1) - 1
         min_int = -(2 ** (bit_width - 1))
         scales = max_val / max_int
         zeros = None
-        #w = torch.clamp(torch.round(w / scales), min_int, max_int) * scales
-        w = torch.clamp(torch_round(w / scales), min_int, max_int) * scales
+        w = torch.clamp(torch.round(w / scales), min_int, max_int) * scales
+
     assert torch.isnan(scales).sum() == 0
     assert torch.isnan(w).sum() == 0
 

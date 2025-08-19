@@ -3,38 +3,41 @@ from typing import Callable
 import torch
 
 
-def replace(original_func: Callable | list[Callable]):
+def replace(*original_func: Callable):
     def decorator(custom_func: Callable):
-        if not isinstance(original_func, list):
-            func_list = [original_func]
-        else:
-            func_list = original_func
-
-        for func in func_list:
-            module_path = func.__module__
-            func_qualname = func.__qualname__
-            if module_path == "torch":
-                module = __import__(module_path, fromlist=[''])
-                setattr(module, func.__name__, custom_func)
-            elif module_path == "torch._C._linalg":
-                module = __import__("torch.linalg", fromlist=[''])
-                if "linalg_" in func_qualname:
-                    func_qualname = func_qualname.split("linalg_")[-1]
-                setattr(module, func_qualname, custom_func)
+        for func in original_func:
+            if hasattr(func, '__objclass__') and func.__objclass__ is torch._C.TensorBase:
+                setattr(torch.Tensor, func.__name__, custom_func)
+            elif hasattr(func, '__module__'):
+                module_path = func.__module__
+                func_qualname = func.__qualname__
+                if module_path == "torch":
+                    module = __import__(module_path, fromlist=[''])
+                    setattr(module, func.__name__, custom_func)
+                elif module_path == "torch._C._linalg":
+                    module = __import__("torch.linalg", fromlist=[''])
+                    if "linalg_" in func_qualname:
+                        func_qualname = func_qualname.split("linalg_")[-1]
+                    setattr(module, func_qualname, custom_func)
+                else:
+                    raise NotImplementedError(f"Replacing module {module_path} not implemented yet.")
             else:
-                raise NotImplementedError(f"Replacing module {module_path} not implemented yet.")
+                raise NotImplementedError(f"Cannot determine how to replace {func}. It doesn't appear to be a module function or tensor method.")
         return custom_func
 
     return decorator
 
+
+# @replace(torch.sqrt, torch.Tensor.sqrt)
 def torch_sqrt(x: torch.Tensor, *, out: torch.Tensor | None = None):
     """
     Custom implementation of torch.sqrt.
     """
     return torch.pow(x, 0.5)
 
-@replace(torch.amin)
-def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: bool = False, *, out: torch.Tensor | None = None):
+
+@replace(torch.amin, torch.Tensor.amin)
+def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdim: bool = False, keepdims: bool = False, *, out: torch.Tensor | None = None):
     """
     Custom implementation of torch.amin using torch.min.
     
@@ -47,6 +50,7 @@ def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     Returns:
         Minimum values along the specified dimension(s)
     """
+    keepdim = keepdim or keepdims
     if dim is None:
         result = torch.min(x)
         if out is not None:
@@ -59,12 +63,12 @@ def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     else:
         dims = dim
 
-    if not keepdims:
+    if not keepdim:
         dims = tuple(sorted(dims, reverse=True))
     
     result = x
     for d in dims:
-        result = torch.min(result, dim=d, keepdim=keepdims).values
+        result = torch.min(result, dim=d, keepdim=keepdim).values
     
     if out is not None:
         out.copy_(result)
@@ -73,8 +77,8 @@ def torch_amin(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     return result
 
 
-@replace(torch.amax)
-def torch_amax(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: bool = False, *, out: torch.Tensor | None = None):
+@replace(torch.amax, torch.Tensor.amax)
+def torch_amax(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdim: bool = False, keepdims: bool = False, *, out: torch.Tensor | None = None):
     """
     Custom implementation of torch.amax using torch.max.
     
@@ -87,6 +91,7 @@ def torch_amax(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     Returns:
         Maximum values along the specified dimension(s)
     """
+    keepdim = keepdim or keepdims
     if dim is None:
         result = torch.max(x)
         if out is not None:
@@ -99,12 +104,12 @@ def torch_amax(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     else:
         dims = dim
 
-    if not keepdims:
+    if not keepdim:
         dims = tuple(sorted(dims, reverse=True))
     
     result = x
     for d in dims:
-        result = torch.max(result, dim=d, keepdim=keepdims).values
+        result = torch.max(result, dim=d, keepdim=keepdim).values
     
     if out is not None:
         out.copy_(result)
@@ -113,7 +118,7 @@ def torch_amax(x: torch.Tensor, dim: int | tuple[int] | None = None, keepdims: b
     return result
 
 
-@replace(torch.round)
+@replace(torch.round, torch.Tensor.round)
 def torch_round(x: torch.Tensor, *, decimals: int = 0, out: torch.Tensor | None = None):
     """
     Custom implementation of torch.round.
@@ -151,7 +156,6 @@ def torch_round(x: torch.Tensor, *, decimals: int = 0, out: torch.Tensor | None 
     return result
 
 
-@replace(torch.linalg.cholesky)
 def torch_cholesky(x: torch.Tensor, upper: bool = False):
     """
     Custom implementation of Cholesky decomposition using the Cholesky-Banachiewicz algorithm.
@@ -182,7 +186,6 @@ def torch_cholesky(x: torch.Tensor, upper: bool = False):
         return L
 
 
-@replace(torch.cholesky_inverse)
 def torch_cholesky_inverse(x: torch.Tensor, upper: bool = False):
     """
     Custom implementation of Cholesky inverse.
@@ -214,3 +217,115 @@ def torch_cholesky_inverse(x: torch.Tensor, upper: bool = False):
                 sum_term = torch.sum(x[i, j:i] * L_inv[j:i, j])
                 L_inv[i, j] = -sum_term / x[i, i]
         return L_inv.T @ L_inv
+
+
+def _gram_cols(B: torch.Tensor, row_chunk: int = 64) -> torch.Tensor:
+    """
+    Compute B^T B without @, using chunked outer-product accumulation to avoid
+    materializing (n, d, d). Safe for large n.
+      (B^T B) = sum_over_rows r_k^T r_k
+    """
+    if B.ndim != 2:
+        raise ValueError("B must be 2D")
+    n, d = B.shape
+    G = B.new_zeros((d, d))
+    for s in range(0, n, row_chunk):
+        blk = B[s : s + row_chunk]              # (m, d)
+        # (m,d,1) * (m,1,d) -> (m,d,d); sum over m -> (d,d)
+        G = G + (blk.unsqueeze(2) * blk.unsqueeze(1)).sum(dim=0)
+    return G
+
+
+def _gram_rows(B: torch.Tensor, col_chunk: int = 64) -> torch.Tensor:
+    """
+    Compute B B^T without @, using chunked outer-product accumulation to avoid
+    materializing (n, n, d). Safe for large d.
+      (B B^T) = sum_over_cols c_k c_k^T
+    """
+    if B.ndim != 2:
+        raise ValueError("B must be 2D")
+    n, d = B.shape
+    G = B.new_zeros((n, n))
+    for s in range(0, d, col_chunk):
+        blk = B[:, s : s + col_chunk]           # (n, m)
+        # (n,1,m) * (1,n,m) -> (n,n,m); sum over m -> (n,n)
+        G = G + (blk.unsqueeze(1) * blk.unsqueeze(0)).sum(dim=2)
+    return G
+
+
+@replace(torch.linalg.cholesky)
+def torch_cholesky_opt(x: torch.Tensor, upper: bool = False):
+    """
+    Cholesky (Banachiewicz, lower) without torch.linalg.
+    If upper=True, returns the upper factor by transpose.
+    """
+    if x.ndim != 2 or x.shape[0] != x.shape[1]:
+        raise ValueError("x must be a square 2D tensor")
+
+    A = x.clone().contiguous()
+    n = A.shape[0]
+
+    for i in range(n):
+        if i > 0:
+            # diag update: sqrt(a_ii - sum_{k<i} a_{ik}^2)
+            s = torch.sum(A[i, :i] * A[i, :i], dim = 0) #torch.dot(A[i, :i], A[i, :i])
+            A[i, i] = torch.pow(A[i, i] - s, 0.5) #torch.sqrt(A[i, i] - s)
+        else:
+            A[i, i] = torch.pow(A[i, i], 0.5) #torch.sqrt(A[i, i])
+
+        if i + 1 < n:
+            if i > 0:
+                # below-diagonal column update (vectorized):
+                # A[i+1:, i] = (A[i+1:, i] - A[i+1:, :i] @ A[i, :i]) / A[i, i]
+                t = torch.sum(A[i + 1:, :i] * A[i, :i], dim = 1) #A[i + 1:, :i] @ A[i, :i]
+                A[i + 1:, i] = (A[i + 1:, i] - t) / A[i, i]
+            else:
+                A[i + 1:, i] = A[i + 1:, i] / A[i, i]
+
+    L = torch.tril(A)
+    return L.T if upper else L
+
+
+@replace(torch.cholesky_inverse)
+def torch_cholesky_inverse_opt(x: torch.Tensor, upper: bool = False):
+    """
+    Invert via triangular-inverse then sandwich, without torch.linalg / sqrt / dot / @.
+    A^{-1} = L^{-T} L^{-1}  (lower),  A^{-1} = U^{-1} U^{-T} (upper)
+    """
+    if x.ndim != 2 or x.shape[0] != x.shape[1]:
+        raise ValueError("x must be a square 2D tensor")
+
+    n = x.shape[0]
+
+    if not upper:
+        # x = L (lower)
+        L = torch.tril(x).contiguous()
+        Linv = torch.zeros_like(L)
+
+        for i in range(n):
+            if i > 0:
+                # Linv[i, :i] = - (L[i, :i] @ Linv[:i, :i]) / L[i, i]
+                # -> (i,) = sum_k L[i,k] * Linv[k,:]  (벡터화)
+                t = (L[i, :i].unsqueeze(1) * Linv[:i, :i]).sum(dim=0)  # (i,)
+                Linv[i, :i] = - t / L[i, i]
+            Linv[i, i] = torch.pow(L[i, i], -1) #L[i, i].reciprocal()
+
+        # A^{-1} = L^{-T} L^{-1} = (Linv^T) * Linv  (Gram of columns)
+        #return (Linv.unsqueeze(2) * Linv.unsqueeze(1)).sum(dim=0)
+        return _gram_cols(Linv, 64)
+    else:
+        # x = U (upper)
+        U = torch.triu(x).contiguous()
+        Uinv = torch.zeros_like(U)
+
+        for i in range(n - 1, -1, -1):
+            if i + 1 < n:
+                # Uinv[i, i+1:] = - (U[i, i+1:] @ Uinv[i+1:, i+1:]) / U[i, i]
+                r = U[i, i + 1:]                      # (m,)
+                M = Uinv[i + 1:, i + 1:]              # (m,m) upper-tri
+                t = (r.unsqueeze(1) * M).sum(dim=0)   # (m,)
+                Uinv[i, i + 1:] = - t / U[i, i]
+            Uinv[i, i] = torch.pow(U[i, i], -1) #U[i, i].reciprocal()
+
+        # A^{-1} = U^{-1} U^{-T} = Uinv * (Uinv^T)  (Gram of rows)
+        return _gram_rows(Uinv, 64)

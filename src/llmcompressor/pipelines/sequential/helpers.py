@@ -3,6 +3,7 @@ import inspect
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
+import os
 
 import torch
 from accelerate.hooks import remove_hook_from_module
@@ -25,7 +26,8 @@ from llmcompressor.modifiers import Modifier
 from llmcompressor.modifiers.utils.hooks import HooksMixin
 from llmcompressor.utils.helpers import calibration_forward_context, patch_attr
 from llmcompressor.utils.pytorch.module import get_no_split_params
-from llmcompressor.rbln import RBLNSubgraph
+if hasattr(torch, "rbln"):
+    from llmcompressor.rbln import RBLNSubgraph
 
 from .ast_helpers import autowrap_forwards
 
@@ -535,7 +537,7 @@ def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
 
     if torch.cuda.is_available():
         offloaded_dispatch(model, execution_device=torch.device("cuda:0"))
-    elif hasattr(torch, "rbln"):
+    elif hasattr(torch, "rbln") and os.getenv("DEVICE", "rbln").lower() == "rbln":
         offloaded_dispatch(model, execution_device=torch.device("rbln"))
     else:
         logger.warning("CUDA is not available! Compressing model on CPU instead")

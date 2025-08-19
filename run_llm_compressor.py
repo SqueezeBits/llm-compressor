@@ -4,12 +4,12 @@ import json
 import os
 import yaml
 
-from llmcompressor import oneshot
-
 
 RECIPES = {
     "w8a16_int_gptq": "recipes/w8a16_int_gptq.yaml",
     "w4a16_int_gptq": "recipes/w4a16_int_gptq.yaml",
+    "w8a16_int_awq": "recipes/w8a16_int_awq.yaml",
+    "w4a16_int_awq": "recipes/w4a16_int_awq.yaml",
 }
 
 class ALG(Enum):
@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--dtype", type=str, default="float16", choices=["float16", "float32"])
     parser.add_argument("--recipe", type=str, default="w8a16_int_gptq", choices=RECIPES.keys())
     parser.add_argument("--dataset", type=str, default="open_platypus")
-    parser.add_argument("--unload-gptq-compression", action="store_true", help="Perform GPTQ compression on Atom. By default, it runs on CPU to use FP32.")
+    parser.add_argument("--onload-gptq-compression", action="store_true", help="Perform GPTQ compression on Atom. By default, it runs on CPU to use FP32.")
     return parser.parse_args()
 
 
@@ -56,18 +56,18 @@ def export_offload_hessians(recipe_sub) -> bool:
 def set_rbln_envs(args, recipe_args, quant_algorithm: ALG):
     if quant_algorithm == ALG.GPTQ:
         offload_hessians = export_offload_hessians(recipe_args)
-        if args.unload_gptq_compression:
+        if args.onload_gptq_compression:
             if offload_hessians:
                 raise ValueError("Set `offload_hessians` to `false` in the recipe to perform compression on Atom.")
             else:
-                import llmcompressor.rbln.rbln_ops
+                os.environ["USE_CUSTOM_OPS"] = "1"
         else:
             if offload_hessians:
                 os.environ["OFFLOAD_COMPRESSION"] = "1"
             else:
                 raise ValueError("Set `offload_hessians` to `true` in the recipe to offload compression to CPU.")
     elif quant_algorithm == ALG.AWQ:
-        import llmcompressor.rbln.rbln_ops
+        os.environ["USE_CUSTOM_OPS"] = "1"
     else:
         raise NotImplementedError("Only GPTQ and AWQ are supported now.")
 
@@ -95,6 +95,7 @@ def main():
     if args.device == "rbln":
         set_rbln_envs(args, recipe_args, quant_algorithm)
 
+    from llmcompressor import oneshot
     require_calibration = "int" in args.recipe or args.recipe == "w8a8_fp"
     output_dir = os.path.join(output_dir, f"{model}-{args.recipe}")
     if require_calibration:

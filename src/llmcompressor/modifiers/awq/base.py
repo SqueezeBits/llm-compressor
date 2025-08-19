@@ -30,6 +30,7 @@ from llmcompressor.pipelines.cache import IntermediatesCache
 from llmcompressor.utils.fsdp.helpers import get_fsdp_parent
 from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_layer_by_name, get_layers
+from llmcompressor.rbln.rbln_ops import torch_sqrt
 
 __all__ = ["AWQModifier"]
 
@@ -461,7 +462,8 @@ class AWQModifier(Modifier, QuantizationMixin):
             weight = torch.cat([bl.weight for bl in balance_layers], dim=0)
             org_shape = weight.shape
             # The weights are reshaped to be organised by quantization group
-            weight = weight.view(-1, self._group_size)
+            if self._group_size is not None:
+                weight = weight.view(-1, self._group_size)
             # Calculates the relative magnitude of the weights within
             # each of the quantization groups, and rescales each group
             # individually so that each group has weights on a 0-1 scale.
@@ -595,7 +597,8 @@ class AWQModifier(Modifier, QuantizationMixin):
                 )
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
-            scales = scales / (scales.max() * scales.min()).sqrt()
+            # scales = scales / (scales.max() * scales.min()).sqrt()
+            scales = scales / torch_sqrt(scales.max() * scales.min()) #TODO(minkyu): Fix inifinite loop when using torch_sqrt with replace patch decorator.
             _scalesview = scales.view(1, -1).to(device)
 
             # avoid scaling values that overflow
@@ -613,7 +616,7 @@ class AWQModifier(Modifier, QuantizationMixin):
                             w=linear.weight.data,
                             symmetric=self._symmetric,
                             bit_width=self._num_bits,
-                            group_size=self._group_size,
+                            group_size=self._group_size if self._group_size is not None else -1,
                         )[0]
                         / _scalesview,
                     )

@@ -7,7 +7,9 @@ PyTorch and HuggingFace Transformers, allowing for quick experimentation.
 """
 
 # flake8: noqa
-
+import torch
+if hasattr(torch, "rbln"):
+    import llmcompressor.rbln
 from .logger import LoggerConfig, configure_logger, logger
 from .version import __version__, version
 

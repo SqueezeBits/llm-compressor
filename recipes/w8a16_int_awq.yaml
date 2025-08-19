@@ -1,0 +1,14 @@
+default_stage:
+  default_modifiers:
+    AWQModifier:
+      ignore: [lm_head]
+      config_groups:
+        group_0:
+          targets: [Linear]
+          weights:
+            num_bits: 8
+            type: int
+            symmetric: false
+            strategy: channel
+            dynamic: false
+    

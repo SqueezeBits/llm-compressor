@@ -28,7 +28,6 @@ from llmcompressor.pipelines.cache import IntermediatesCache
 from llmcompressor.utils.fsdp.helpers import get_fsdp_parent
 from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_layer_by_name
-from llmcompressor.rbln.rbln_ops import torch_sqrt
 
 __all__ = ["AWQModifier"]
 
@@ -592,8 +591,7 @@ class AWQModifier(Modifier, QuantizationMixin):
                 )
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
-            # scales = scales / (scales.max() * scales.min()).sqrt()
-            scales = scales / torch_sqrt(scales.max() * scales.min()) #TODO(minkyu): Fix inifinite loop when using torch_sqrt with replace patch decorator.
+            scales = scales / (scales.max() * scales.min()).sqrt()
             _scalesview = scales.view(1, -1).to(device)
 
             # avoid scaling values that overflow

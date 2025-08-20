@@ -31,12 +31,12 @@ def replace(*original_func: Callable):
     return decorator
 
 
-# @replace(torch.sqrt, torch.Tensor.sqrt)
+@replace(torch.sqrt, torch.Tensor.sqrt)
 def torch_sqrt(x: torch.Tensor, *, out: torch.Tensor | None = None):
     """
     Custom implementation of torch.sqrt.
     """
-    return torch.pow(x, 0.5)
+    return torch.tensor(1, device=x.device, dtype=x.dtype) / torch.rsqrt(x)
 
 
 @replace(torch.amin, torch.Tensor.amin)

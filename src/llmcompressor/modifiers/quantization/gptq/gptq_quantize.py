@@ -38,7 +38,7 @@ def accumulate_hessian(
     H: Optional[torch.Tensor],
     num_samples: int,
 ) -> Tuple[torch.Tensor, int]:
-    inp = inp.to(device=H.device)
+    inp = inp.to(device=H.device, dtype=GPTQ_PRECISION)
     if len(inp.shape) == 2:
         inp = inp.unsqueeze(0)
 

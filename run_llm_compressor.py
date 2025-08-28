@@ -22,11 +22,12 @@ class ALG(Enum):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B")
-    parser.add_argument("--device", type=str, default="rbln", choices=["rbln", "cpu"])
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--device", type=str, default="rbln", choices=["rbln", "cpu", "cuda"])
     parser.add_argument("--dtype", type=str, default="float16", choices=["float16", "float32"])
     parser.add_argument("--recipe", type=str, default="w8a16_int_gptq", choices=RECIPES.keys())
     parser.add_argument("--dataset", type=str, default="open_platypus")
+    parser.add_argument("--n-samples", type=int, default=16)
     parser.add_argument("--unload-gptq-compression", action="store_true", help="Perform GPTQ compression on Atom. By default, it runs on CPU to use FP32.")
     return parser.parse_args()
 
@@ -98,16 +99,17 @@ def main():
         set_rbln_envs(args, recipe_args, quant_algorithm)
 
     require_calibration = "int" in args.recipe or args.recipe == "w8a8_fp"
-    output_dir = os.path.join(output_dir, f"{model}-{args.recipe}")
+    output_dir = os.path.join(output_dir, f"{model}-{args.recipe}-{args.device}-n{args.n_samples}")
     if require_calibration:
         oneshot(
             model=model,
             recipe=recipe,
             output_dir=output_dir,
             dataset="open_platypus",
-            num_calibration_samples=4,
+            num_calibration_samples=args.n_samples,
             max_seq_length=2048,
             precision=args.dtype,
+            shuffle_calibration_samples=False,
         )
     else:
         oneshot(
@@ -115,6 +117,7 @@ def main():
             recipe=recipe,
             output_dir=output_dir,
             precision=args.dtype,
+            shuffle_calibration_samples=False,
         )
 
 

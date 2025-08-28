@@ -234,7 +234,9 @@ class GPTQModifier(Modifier, QuantizationMixin):
             self._num_samples[module] = 0
 
         # Accumulate hessian with input with optional offloading
-        with self._maybe_onload_hessian(module):
+        with align_module_device(
+                module, execution_device=torch.device("cpu") if os.environ.get("OFFLOAD_COMPRESSION", "0") == "1" else None
+            ), self._maybe_onload_hessian(module):
             self._hessians[module], self._num_samples[module] = accumulate_hessian(
                 inp,
                 module,

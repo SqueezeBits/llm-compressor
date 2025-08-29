@@ -537,7 +537,7 @@ def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
 
     if torch.cuda.is_available():
         offloaded_dispatch(model, execution_device=torch.device("cuda:0"))
-    elif hasattr(torch, "rbln") and os.getenv("DEVICE", "rbln").lower() == "rbln":
+    elif hasattr(torch, "rbln") and os.getenv("DEVICE", "rbln").lower() == "rbln" and os.environ.get("RBLN_COMPILE", "0") == "0":
         offloaded_dispatch(model, execution_device=torch.device("rbln"))
     else:
         logger.warning("CUDA is not available! Compressing model on CPU instead")

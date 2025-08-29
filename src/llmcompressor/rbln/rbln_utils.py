@@ -9,6 +9,10 @@ import rebel
 
 
 ENFORCE_EAGER = os.environ.get("RBLN_COMPILE", "0") == "0"
+if not ENFORCE_EAGER:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+    torch._dynamo.reset()
 
 
 @dataclass
@@ -30,8 +34,7 @@ class RBLNSubgraph:
 
     def __post_init__(self):
         if not ENFORCE_EAGER:
-            raise NotImplementedError("RBLN compilation is not implemented yet.")
-            # self._compiled_module = torch.compile(self.graph_module, backend="rbln", dynamic=False)
+            self._compiled_module = torch.compile(self.graph_module, backend="rbln", dynamic=False, options={'cache_dir': './.cache'})
             # TODO: clear compilation cache after execution of each subgraph to save device memory.(torch._dynamo.reset())
 
     def forward(self, *args, **kwargs) -> dict[str, Any]:
@@ -53,7 +56,7 @@ class RBLNSubgraph:
                 outputs = forward_fn(*args, **kwargs)
             else:
                 assert self._compiled_module is not None
-                outputs = self._compiled_module(*args, **kwargs)
+                outputs = self._compiled_module(**kwargs)
         except Exception as exception:
             from llmcompressor.pipelines.sequential.helpers import add_line_numbers
             raise RuntimeError(

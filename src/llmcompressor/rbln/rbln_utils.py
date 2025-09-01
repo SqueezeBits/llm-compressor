@@ -35,7 +35,6 @@ class RBLNSubgraph:
     def __post_init__(self):
         if not ENFORCE_EAGER:
             self._compiled_module = torch.compile(self.graph_module, backend="rbln", dynamic=False, options={'cache_dir': './.cache'})
-            # TODO: clear compilation cache after execution of each subgraph to save device memory.(torch._dynamo.reset())
 
     def forward(self, *args, **kwargs) -> dict[str, Any]:
         """

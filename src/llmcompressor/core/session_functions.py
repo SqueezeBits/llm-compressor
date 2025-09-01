@@ -162,6 +162,16 @@ class LifecycleCallbacks:
         see `src/llmcompressor/pipelines/basic/pipeline.py` for usage example
         """
         return cls.event(EventType.CALIBRATION_EPOCH_END, **kwargs)
+    
+    @classmethod
+    def subgraph_forward_end(cls, **kwargs) -> ModifiedState:
+        """
+        Invoke a subgraph forward end event for the active session. This event should be
+        called after a subgraph has been forward propagated for one batch
+
+        see `src/llmcompressor/pipelines/sequential/pipeline.py` for usage example
+        """
+        return cls.event(EventType.SUBGRAPH_FORWARD_END, **kwargs)
 
 
 callbacks = LifecycleCallbacks

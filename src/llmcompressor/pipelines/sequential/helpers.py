@@ -26,7 +26,8 @@ from llmcompressor.modifiers import Modifier
 from llmcompressor.modifiers.utils.hooks import HooksMixin
 from llmcompressor.utils.helpers import calibration_forward_context, patch_attr
 from llmcompressor.utils.pytorch.module import get_no_split_params
-if hasattr(torch, "rbln"):
+from llmcompressor.rbln import is_rbln_available, ENFORCE_EAGER
+if is_rbln_available():
     from llmcompressor.rbln import RBLNSubgraph
 
 from .ast_helpers import autowrap_forwards
@@ -366,7 +367,7 @@ def partition_graph(model: Module, partitions: List[List[Node]]) -> List[Subgrap
                 graph=graph,
                 input_names=input_names,
                 consumed_names=set(),  # populated later
-            ) if not hasattr(torch, "rbln") \
+            ) if not is_rbln_available() \
             else RBLNSubgraph(
                 graph_module=graph_module,
                 input_names=input_names,
@@ -537,7 +538,7 @@ def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
 
     if torch.cuda.is_available():
         offloaded_dispatch(model, execution_device=torch.device("cuda:0"))
-    elif hasattr(torch, "rbln") and os.getenv("DEVICE", "rbln").lower() == "rbln" and os.environ.get("RBLN_COMPILE", "0") == "0":
+    elif is_rbln_available() and os.getenv("DEVICE", "rbln").lower() == "rbln" and ENFORCE_EAGER:
         offloaded_dispatch(model, execution_device=torch.device("rbln"))
     else:
         logger.warning("CUDA is not available! Compressing model on CPU instead")

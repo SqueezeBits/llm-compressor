@@ -307,7 +307,6 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 )
 
         self._captured_inputs.clear()
-        torch._dynamo.reset()
 
     def compress_modules(self):
         """

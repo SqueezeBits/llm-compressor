@@ -2,9 +2,8 @@ import argparse
 from enum import Enum
 import json
 import os
+import time
 import yaml
-
-from llmcompressor import oneshot
 
 
 RECIPES = {
@@ -56,21 +55,13 @@ def export_offload_hessians(recipe_sub) -> bool:
     return offload_hessians
 
 
-def set_rbln_envs(args, recipe_args, quant_algorithm: ALG):
+def set_rbln_envs(recipe_args, quant_algorithm: ALG):
     if quant_algorithm == ALG.GPTQ:
         offload_hessians = export_offload_hessians(recipe_args)
-        if args.unload_gptq_compression:
-            if offload_hessians:
-                raise ValueError("Set `offload_hessians` to `false` in the recipe to perform compression on Atom.")
-            else:
-                import llmcompressor.rbln.rbln_ops
-        else:
-            if offload_hessians:
-                os.environ["OFFLOAD_COMPRESSION"] = "1"
-            else:
-                raise ValueError("Set `offload_hessians` to `true` in the recipe to offload compression to CPU.")
+        if not offload_hessians:
+            raise ValueError("Set `offload_hessians` to `true` in the recipe to use GPTQ on Atom.")
     elif quant_algorithm == ALG.AWQ:
-        import llmcompressor.rbln.rbln_ops
+        os.environ["USE_CUSTOM_OPS"] = "1"
     else:
         raise NotImplementedError("Only GPTQ and AWQ are supported now.")
 
@@ -96,10 +87,12 @@ def main():
     
     quant_algorithm = export_algorithm(recipe_args)
     if args.device == "rbln":
-        set_rbln_envs(args, recipe_args, quant_algorithm)
+        set_rbln_envs(recipe_args, quant_algorithm)
 
+    from llmcompressor import oneshot
     require_calibration = "int" in args.recipe or args.recipe == "w8a8_fp"
     output_dir = os.path.join(output_dir, f"{model}-{args.recipe}-{args.device}-n{args.n_samples}")
+    print(f"Starting compression at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     if require_calibration:
         oneshot(
             model=model,
@@ -119,6 +112,7 @@ def main():
             precision=args.dtype,
             shuffle_calibration_samples=False,
         )
+    print(f"Finished compression at {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 if __name__ == "__main__":

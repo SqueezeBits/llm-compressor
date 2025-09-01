@@ -7,8 +7,8 @@ from torch.fx import GraphModule
 from torch.fx.graph import PythonCode
 import rebel
 
+from .rbln_envs import ENFORCE_EAGER
 
-ENFORCE_EAGER = os.environ.get("RBLN_COMPILE", "0") == "0"
 if not ENFORCE_EAGER:
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True

@@ -2,9 +2,12 @@ from typing import Callable
 
 import torch
 
+from .rbln_envs import USE_CUSTOM_OPS
 
 def replace(*original_func: Callable):
     def decorator(custom_func: Callable):
+        if not USE_CUSTOM_OPS:
+            return custom_func
         for func in original_func:
             if hasattr(func, '__objclass__') and func.__objclass__ is torch._C.TensorBase:
                 setattr(torch.Tensor, func.__name__, custom_func)

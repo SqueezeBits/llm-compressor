@@ -1,4 +1,5 @@
 import inspect
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -28,6 +29,7 @@ from llmcompressor.pipelines.cache import IntermediatesCache
 from llmcompressor.utils.fsdp.helpers import get_fsdp_parent
 from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_layer_by_name
+from llmcompressor.rbln import is_rbln_available, USE_CUSTOM_OPS
 
 __all__ = ["AWQModifier"]
 
@@ -223,6 +225,9 @@ class AWQModifier(Modifier, QuantizationMixin):
             )
 
         self._set_resolved_mappings(state.model)
+
+        if is_rbln_available() and os.getenv("DEVICE", "rbln").lower() == "rbln" and not USE_CUSTOM_OPS:
+            raise ValueError(f"Environment variable `USE_CUSTOM_OPS` should be set to `1` when using AWQ.")
 
         return True
 

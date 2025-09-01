@@ -17,6 +17,7 @@ from llmcompressor.pipelines.sequential.helpers import (
     trace_subgraphs,
 )
 from llmcompressor.utils.helpers import DisableQuantization, calibration_forward_context
+from llmcompressor.rbln import ENFORCE_EAGER
 
 if TYPE_CHECKING:
     from llmcompressor.args.dataset_arguments import DatasetArguments
@@ -94,6 +95,8 @@ class SequentialPipeline(CalibrationPipeline):
                     for batch_idx in tqdm(range(len(dataloader)), desc=calib_desc):
                         inputs = activations.fetch(batch_idx, subgraph.input_names)
                         subgraph.forward(model, **inputs)
+                        if not ENFORCE_EAGER:
+                            LifecycleCallbacks.subgraph_forward_end()
 
                     LifecycleCallbacks.sequential_epoch_end()
 

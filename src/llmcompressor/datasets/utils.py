@@ -10,6 +10,7 @@ from transformers.data import default_data_collator
 from llmcompressor.args import DatasetArguments
 from llmcompressor.transformers.finetune.data import TextGenerationDataset
 from llmcompressor.typing import Processor
+from llmcompressor.rbln import is_rbln_available
 
 
 def get_processed_dataset(
@@ -144,7 +145,7 @@ def format_calibration_data(
         if do_shuffle
         else SequentialSampler(tokenized_calibration),
         "collate_fn": collate_fn,
-        "pin_memory": False if hasattr(torch, "rbln") else True,
+        "pin_memory": False if is_rbln_available() else True,
     }
 
     calibration_dataloader = DataLoader(tokenized_calibration, **dataloader_params)

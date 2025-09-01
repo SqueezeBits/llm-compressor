@@ -29,7 +29,7 @@ from llmcompressor.modifiers.quantization.gptq.gptq_quantize import (
 from llmcompressor.modifiers.quantization.quantization import QuantizationMixin
 from llmcompressor.sentinel import Sentinel
 from llmcompressor.utils.metric_logging import CompressionLogger
-from llmcompressor.rbln import ENFORCE_EAGER
+from llmcompressor.rbln import is_rbln_available, ENFORCE_EAGER
 
 __all__ = ["GPTQModifier"]
 
@@ -175,6 +175,9 @@ class GPTQModifier(Modifier, QuantizationMixin):
         # prepare module names
         self._module_names = {m: name for name, m in state.model.named_modules()}
 
+        if is_rbln_available and os.getenv("DEVICE", "rbln").lower() == "rbln" and not self.offload_hessians:
+            raise ValueError("Set `offload_hessians` to `true` in the recipe to use GPTQ on Atom.")
+
         return True
 
     def on_start(self, state: State, event: Event, **kwargs):
@@ -267,7 +270,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
 
         # Accumulate hessian with input with optional offloading
         with align_module_device(
-                module, execution_device=torch.device("cpu") if os.environ.get("OFFLOAD_COMPRESSION", "0") == "1" else None
+                module, execution_device=torch.device("cpu")
             ), self._maybe_onload_hessian(module):
             self._hessians[module], self._num_samples[module] = accumulate_hessian(
                 inp,
@@ -301,7 +304,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 self._num_samples[module] = 0
 
             with align_module_device(
-                    module, execution_device=torch.device("cpu") if os.environ.get("OFFLOAD_COMPRESSION", "0") == "1" else None
+                    module, execution_device=torch.device("cpu")
                 ), self._maybe_onload_hessian(module):
                 self._hessians[module], self._num_samples[module] = accumulate_hessian(
                     module_input.detach().clone(),
@@ -324,7 +327,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
 
             logger.info(f"Quantizing {name} using {num_samples} samples")
             with torch.no_grad(), align_module_device(
-                module, execution_device=torch.device("cpu") if os.environ.get("OFFLOAD_COMPRESSION", "0") == "1" else None
+                module, execution_device=torch.device("cpu")
             ), self._maybe_onload_hessian(module), CompressionLogger(
                 module
             ) as comp_logger:

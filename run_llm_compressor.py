@@ -24,10 +24,9 @@ def parse_args():
     parser.add_argument("--model", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--device", type=str, default="rbln", choices=["rbln", "cpu", "cuda"])
     parser.add_argument("--dtype", type=str, default="float16", choices=["float16", "float32"])
-    parser.add_argument("--recipe", type=str, default="w8a16_int_gptq", choices=RECIPES.keys())
+    parser.add_argument("--recipe", type=str, default="w4a16_int_gptq", choices=RECIPES.keys())
     parser.add_argument("--dataset", type=str, default="open_platypus")
-    parser.add_argument("--n-samples", type=int, default=16)
-    parser.add_argument("--unload-gptq-compression", action="store_true", help="Perform GPTQ compression on Atom. By default, it runs on CPU to use FP32.")
+    parser.add_argument("--n-samples", type=int, default=1)
     return parser.parse_args()
 
 

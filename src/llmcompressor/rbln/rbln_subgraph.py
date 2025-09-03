@@ -12,6 +12,7 @@ from .rbln_envs import ENFORCE_EAGER
 if not ENFORCE_EAGER:
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
+    torch._dynamo.config.fail_on_recompile_limit_hit = False
     torch._dynamo.reset()
 
 

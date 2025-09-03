@@ -31,7 +31,7 @@ from llmcompressor.pipelines.cache import IntermediatesCache
 from llmcompressor.utils.fsdp.helpers import get_fsdp_parent
 from llmcompressor.utils.helpers import calibration_forward_context
 from llmcompressor.utils.pytorch.module import get_layer_by_name, get_layers
-from llmcompressor.rbln import is_rbln_available, USE_CUSTOM_OPS
+from llmcompressor.rbln import is_rbln_available, USE_CUSTOM_OPS, ENFORCE_EAGER
 
 __all__ = ["AWQModifier"]
 
@@ -142,6 +142,10 @@ class AWQModifier(Modifier, QuantizationMixin):
     _smooth_activation_means: Dict[str, Tuple[torch.FloatTensor, int]] = PrivateAttr(
         default_factory=dict
     )
+    # For ENFORCE_EAGER=False: capture inputs to balance layers
+    _captured_inputs: Dict[Module, torch.Tensor] = PrivateAttr(default_factory=dict)
+    _target_modules: List[str] = PrivateAttr(default_factory=list)
+    _consumed_input_caches: List[str] = PrivateAttr(default_factory=list)
 
     @model_validator(mode="after")
     def validate_model_after(model: "AWQModifier") -> "AWQModifier":
@@ -261,6 +265,9 @@ class AWQModifier(Modifier, QuantizationMixin):
             if not self.ended_:
                 self.on_end(state, None)
 
+        elif event.type_ == EventType.SUBGRAPH_FORWARD_END:
+            self.calibrate_subgraph()
+
     def on_end(self, state: State, event: Event, **kwargs):
         """
         Finish calibrating by setting scales and zero-points,
@@ -288,11 +295,12 @@ class AWQModifier(Modifier, QuantizationMixin):
         """
         if not self.ended_:
             self.on_end(state, None)
-
         self._parent_args_cache.clear()
         self._smooth_activation_means.clear()
         self._resolved_mappings.clear()
-
+        self._captured_inputs.clear()
+        self._target_modules.clear()
+        self._consumed_input_caches.clear()
         return True
 
     def _set_resolved_mappings(self, model: Module) -> None:
@@ -410,11 +418,25 @@ class AWQModifier(Modifier, QuantizationMixin):
             ):
                 self._smooth_activation_means[smooth_name] = _accumulate_mean(
                     # Assume that first argument is the input
-                    args[0].cpu().detach().squeeze(),
+                    args[0].detach().squeeze(),
                     self._smooth_activation_means.get(smooth_name, None),
                 )
 
             return cache_smooth_activations_hook
+        def capture_input_hook_fn(smooth_name):
+            def capture_input_hook(
+                module: torch.nn.Module,
+                args: Tuple[torch.Tensor, ...],
+            ) -> None:
+                """
+                Hook to capture inputs to target modules for later lazy activation accumulation
+                """
+                inp = args[0]
+                if smooth_name not in self._captured_inputs:
+                    self._captured_inputs[smooth_name] = inp
+                else:
+                    self._captured_inputs[smooth_name] = torch.cat([self._captured_inputs[smooth_name], inp], dim=0)
+            return capture_input_hook
 
         for mapping in self._resolved_mappings:
             # parent kwargs needed for future forward passes
@@ -434,11 +456,52 @@ class AWQModifier(Modifier, QuantizationMixin):
             # input activations to balance layers needed for loss function
             # storing inputs to first balance layer is sufficient
             # other balance layers get the same input
-            self.register_hook(
-                mapping.balance_layers[0],
-                create_cache_smooth_activations_hook_fn(mapping.smooth_name),
-                "forward",
+            if ENFORCE_EAGER:
+                self.register_hook(
+                    mapping.balance_layers[0],
+                    create_cache_smooth_activations_hook_fn(mapping.smooth_name),
+                    "forward",
+                )
+            else:
+                self._target_modules.append(mapping.smooth_name)
+                self.register_hook(
+                    mapping.balance_layers[0],
+                    capture_input_hook_fn(mapping.smooth_name),
+                    "forward_pre",
+                )
+
+    def calibrate_subgraph(self):
+        """
+        Calibration hook to accumulate activations of target modules
+        of a subgraph. Processes all captured inputs at once after subgraph forward.
+        """
+        if not self._captured_inputs:
+            return
+        for key in self._target_modules:
+            if key in self._consumed_input_caches:
+                continue
+
+            if key not in self._captured_inputs:
+                continue
+
+            if (module_input := self._captured_inputs[key]) is None:
+                continue
+
+            # Find the corresponding smooth_name for this module
+            smooth_name = None
+            for mapping in self._resolved_mappings:
+                if mapping.smooth_name == key:
+                    smooth_name = mapping.smooth_name
+                    break
+    
+            if smooth_name is None:
+                continue
+            self._smooth_activation_means[smooth_name] = _accumulate_mean(
+                module_input.detach().clone().mean(dim=0),
+                self._smooth_activation_means.get(smooth_name, None),
             )
+            self._consumed_input_caches.append(key)
+        self._captured_inputs.clear()
 
     @torch.no_grad()
     def _apply_smoothing(self, model: Module) -> None:
@@ -502,7 +565,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             @torch.no_grad()
             def smooth(module):
                 with align_module_device(module):
-                    scales = best_scales.to(module.weight.device)
+                    scales = best_scales
                     if module in balance_layers:
                         update_offload_parameter(
                             module,
@@ -544,7 +607,6 @@ class AWQModifier(Modifier, QuantizationMixin):
 
             # remove caches needed to smooth this mapping
             del self._smooth_activation_means[mapping.smooth_name]
-
         for v in self._parent_args_cache.values():
             v.batch_intermediates.clear()
         self._assert_all_activations_consumed()
@@ -584,11 +646,11 @@ class AWQModifier(Modifier, QuantizationMixin):
         best_scales = None
         best_error = float("inf")
 
-        org_sd = {k: v.cpu() for k, v in parent_module.state_dict().items()}
+        org_sd = {k: v for k, v in parent_module.state_dict().items()}
 
         device = get_execution_device(parent_module)
-        x_mean = x_mean.view(-1).to(device)
-        w_mean = w_mean.view(-1).to(device)
+        x_mean = x_mean.view(-1)
+        w_mean = w_mean.view(-1)
 
         for ratio in range(n_grid):
             # create new scales
@@ -602,7 +664,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
             scales = scales / (scales.max() * scales.min()).sqrt()
-            _scalesview = scales.view(1, -1).to(device)
+            _scalesview = scales.view(1, -1)
 
             # avoid scaling values that overflow
             scales[torch.isinf(scales)] = 1
@@ -646,7 +708,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             torch.isnan(best_scales).sum() == 0
         ), f"Nan found in scales: {best_scales}"
 
-        return best_scales.detach().cpu()
+        return best_scales.detach()
 
     @torch.no_grad()
     def _compute_loss(
@@ -661,9 +723,8 @@ class AWQModifier(Modifier, QuantizationMixin):
         # Compute the MSE loss for each batch
         for fp16_batch, int_w_batch in zip(fp16_outputs, int_w_outputs):
             batch_loss = (
-                (fp16_batch.to(device) - int_w_batch.to(device))
+                (fp16_batch - int_w_batch)
                 .view(-1)
-                .float()
                 .pow(2)
                 .sum()
                 .item()
@@ -735,7 +796,7 @@ def _accumulate_mean(
     sum_added = inp.sum(dim=0)
     num_added = inp.size(0)
     if prev_mean_and_count is None:
-        return sum_added, num_added
+        return sum_added / num_added, num_added
 
     prev_mean, prev_count = prev_mean_and_count
 

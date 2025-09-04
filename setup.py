@@ -127,7 +127,7 @@ setup(
         (
             "compressed-tensors==0.10.2"
             if BUILD_TYPE == "release"
-            else "compressed-tensors>=0.10.3a2"
+            else "compressed-tensors==0.10.3a20250731"
         ),
     ],
     extras_require={

@@ -153,7 +153,7 @@ class IntermediatesCache:
         device = intermediate.device
 
         if isinstance(value, torch.Tensor):
-            return value.to(device=device)
+            return value.to(device=device, dtype=value.dtype)
 
         if is_dataclass(value):
             for field in fields(value):  # `asdict` is recursive, not applicable here

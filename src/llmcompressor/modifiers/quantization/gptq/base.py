@@ -270,7 +270,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
 
         # Accumulate hessian with input with optional offloading
         with align_module_device(
-                module, execution_device=torch.device("cpu")
+                module, execution_device=torch.device("cpu") if is_rbln_available() else None
             ), self._maybe_onload_hessian(module):
             self._hessians[module], self._num_samples[module] = accumulate_hessian(
                 inp,
@@ -304,7 +304,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
                 self._num_samples[module] = 0
 
             with align_module_device(
-                    module, execution_device=torch.device("cpu")
+                    module, execution_device=torch.device("cpu") if is_rbln_available() else None
                 ), self._maybe_onload_hessian(module):
                 self._hessians[module], self._num_samples[module] = accumulate_hessian(
                     module_input.detach().clone(),
@@ -326,7 +326,7 @@ class GPTQModifier(Modifier, QuantizationMixin):
 
             logger.info(f"Quantizing {name} using {num_samples} samples")
             with torch.no_grad(), align_module_device(
-                module, execution_device=torch.device("cpu")
+                module, execution_device=torch.device("cpu") if is_rbln_available() else None
             ), self._maybe_onload_hessian(module), CompressionLogger(
                 module
             ) as comp_logger:

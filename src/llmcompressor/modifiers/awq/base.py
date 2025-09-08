@@ -145,8 +145,8 @@ class AWQModifier(Modifier, QuantizationMixin):
     # For ENFORCE_EAGER=False: capture inputs to balance layers
     _captured_inputs: Dict[Module, torch.Tensor] = PrivateAttr(default_factory=dict)
     _target_modules: List[str] = PrivateAttr(default_factory=list)
-    _consumed_input_caches: List[str] = PrivateAttr(default_factory=list)
-    _compiled_modules: Dict[Module, GraphModule] = PrivateAttr(default_factory=dict)
+    _compiled_modules: Dict[Module, Module] = PrivateAttr(default_factory=dict)
+
     @model_validator(mode="after")
     def validate_model_after(model: "AWQModifier") -> "AWQModifier":
         """
@@ -299,7 +299,7 @@ class AWQModifier(Modifier, QuantizationMixin):
         self._resolved_mappings.clear()
         self._captured_inputs.clear()
         self._target_modules.clear()
-        self._consumed_input_caches.clear()
+
         return True
 
     def _set_resolved_mappings(self, model: Module) -> None:
@@ -466,11 +466,10 @@ class AWQModifier(Modifier, QuantizationMixin):
         Calibration hook to accumulate activations of target modules
         of a subgraph. Processes all captured inputs at once after subgraph forward.
         """
+
         if not self._captured_inputs:
             return
         for key in self._target_modules:
-            if key in self._consumed_input_caches:
-                continue
 
             if key not in self._captured_inputs:
                 continue
@@ -488,10 +487,10 @@ class AWQModifier(Modifier, QuantizationMixin):
             if smooth_name is None:
                 continue
             self._smooth_activation_means[smooth_name] = _accumulate_mean(
-                module_input.detach().clone().abs().mean(dim=0),
+                module_input.detach().clone().mean(dim=0),
                 self._smooth_activation_means.get(smooth_name, None),
             )
-            self._consumed_input_caches.append(key)
+
         self._captured_inputs.clear()
 
     @torch.no_grad()
@@ -515,17 +514,12 @@ class AWQModifier(Modifier, QuantizationMixin):
             balance_layers = mapping.balance_layers
             parent_module = mapping.parent
             if not ENFORCE_EAGER:
-                try:
-                    for batch_kwargs in self._parent_args_cache[parent_module]:
-                        break
-                    tracer = HFTracer()
-                    with torch.no_grad():
-                        graph = tracer.trace(parent_module, dummy_inputs=batch_kwargs, complete_concrete_args_with_inputs_not_in_dummy_inputs=False,)
-                    graph_module = GraphModule(parent_module, graph)
-                except:
-                    graph_module = parent_module
+                for m in parent_module.modules():
+                    # Remove unnecessary forward_pre_hooks
+                    if hasattr(m, "_forward_pre_hooks") and isinstance(m._forward_pre_hooks, dict):
+                        m._forward_pre_hooks.clear()
                 compiled_module = torch.compile(
-                    graph_module,
+                    parent_module,
                     backend="rbln",
                     dynamic=False,
                     options={'cache_dir': './.cache'}
@@ -829,7 +823,7 @@ def _accumulate_mean(
     sum_added = inp.sum(dim=0) if not is_rbln_available() else inp.float().sum(dim=0)
     num_added = inp.size(0)
     if prev_mean_and_count is None:
-        return sum_added / num_added, num_added
+        return sum_added, num_added
 
     prev_mean, prev_count = prev_mean_and_count
 

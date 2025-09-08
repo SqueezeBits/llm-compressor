@@ -3,6 +3,8 @@ import os
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
+from torch.fx import Graph, GraphModule
+from transformers.utils.fx import HFTracer
 from compressed_tensors.quantization import disable_quantization
 from compressed_tensors.utils import (
     align_modules,
@@ -144,7 +146,7 @@ class AWQModifier(Modifier, QuantizationMixin):
     _captured_inputs: Dict[Module, torch.Tensor] = PrivateAttr(default_factory=dict)
     _target_modules: List[str] = PrivateAttr(default_factory=list)
     _consumed_input_caches: List[str] = PrivateAttr(default_factory=list)
-
+    _compiled_modules: Dict[Module, GraphModule] = PrivateAttr(default_factory=dict)
     @model_validator(mode="after")
     def validate_model_after(model: "AWQModifier") -> "AWQModifier":
         """
@@ -229,9 +231,6 @@ class AWQModifier(Modifier, QuantizationMixin):
             )
 
         self._set_resolved_mappings(state.model)
-
-        if is_rbln_available() and os.getenv("DEVICE", "rbln").lower() == "rbln" and not USE_CUSTOM_OPS:
-            raise ValueError(f"Environment variable `USE_CUSTOM_OPS` should be set to `1` when using AWQ.")
 
         return True
 
@@ -410,7 +409,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             ):
                 self._smooth_activation_means[smooth_name] = _accumulate_mean(
                     # Assume that first argument is the input
-                    args[0].detach().squeeze(),
+                    args[0].detach().squeeze() if is_rbln_available() else args[0].cpu().detach().squeeze(),
                     self._smooth_activation_means.get(smooth_name, None),
                 )
 
@@ -489,7 +488,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             if smooth_name is None:
                 continue
             self._smooth_activation_means[smooth_name] = _accumulate_mean(
-                module_input.detach().clone().mean(dim=0),
+                module_input.detach().clone().abs().mean(dim=0),
                 self._smooth_activation_means.get(smooth_name, None),
             )
             self._consumed_input_caches.append(key)
@@ -515,7 +514,23 @@ class AWQModifier(Modifier, QuantizationMixin):
             smooth_layer = mapping.smooth_layer
             balance_layers = mapping.balance_layers
             parent_module = mapping.parent
-
+            if not ENFORCE_EAGER:
+                try:
+                    for batch_kwargs in self._parent_args_cache[parent_module]:
+                        break
+                    tracer = HFTracer()
+                    with torch.no_grad():
+                        graph = tracer.trace(parent_module, dummy_inputs=batch_kwargs, complete_concrete_args_with_inputs_not_in_dummy_inputs=False,)
+                    graph_module = GraphModule(parent_module, graph)
+                except:
+                    graph_module = parent_module
+                compiled_module = torch.compile(
+                    graph_module,
+                    backend="rbln",
+                    dynamic=False,
+                    options={'cache_dir': './.cache'}
+                )
+                self._compiled_modules[mapping.parent] = compiled_module
             with align_modules(
                 [parent_module, smooth_layer, *balance_layers]
             ), calibration_forward_context(model), HooksMixin.disable_hooks():
@@ -558,7 +573,7 @@ class AWQModifier(Modifier, QuantizationMixin):
 
                 @torch.no_grad()
                 def _smooth(module):
-                    scales = best_scales
+                    scales = best_scales if is_rbln_available() else best_scales.to(module.weight.device)
                     if module in balance_layers:
                         update_offload_parameter(
                             module,
@@ -605,9 +620,17 @@ class AWQModifier(Modifier, QuantizationMixin):
         self._assert_all_activations_consumed()
 
     def _run_samples(self, module: Module) -> List[torch.Tensor]:
-        outputs = [
-            module(**batch_kwargs) for batch_kwargs in self._parent_args_cache[module]
-        ]
+        if module in self._compiled_modules:
+            outputs = [
+                self._compiled_modules[module](**batch_kwargs)
+                for batch_kwargs in self._parent_args_cache[module]
+            ]
+        else:
+            with align_modules([module]):
+                outputs = [
+                    module(**batch_kwargs)
+                    for batch_kwargs in self._parent_args_cache[module]
+                ]
         return [
             # If Tuple, assume that first argument is the input
             output[0] if isinstance(output, Tuple) else output
@@ -637,15 +660,14 @@ class AWQModifier(Modifier, QuantizationMixin):
         best_scales = None
         best_error = float("inf")
 
-        org_sd = {
-            k: v
-            for k, v in parent_module.state_dict().items()
-            if v.device != torch.device("meta")
-        }
+        org_sd = {k: v if is_rbln_available() else v.cpu() for k, v in parent_module.state_dict().items()}
 
-        device = get_execution_device(parent_module)
         x_mean = x_mean.view(-1)
         w_mean = w_mean.view(-1)
+
+        if not is_rbln_available():
+            device = get_execution_device(parent_module)
+            x_mean, w_mean = x_mean.to(device), w_mean.to(device)
 
         for ratio in range(n_grid):
             # create new scales
@@ -660,6 +682,8 @@ class AWQModifier(Modifier, QuantizationMixin):
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
             scales = scales / (scales.max() * scales.min()).sqrt()
             _scalesview = scales.view(1, -1)
+            if not is_rbln_available():
+                _scalesview = _scalesview.to(device)
 
             # avoid scaling values that overflow
             scales[torch.isinf(scales)] = 1
@@ -684,7 +708,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             int_w_outputs = self._run_samples(parent_module)
 
             # compute mean squared error (L2 norm)
-            loss = self._compute_loss(fp16_outputs, int_w_outputs, device)
+            loss = self._compute_loss(fp16_outputs, int_w_outputs, device=device if not is_rbln_available() else None)
 
             history.append(loss)
             if loss < best_error:
@@ -707,7 +731,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             torch.isnan(best_scales).sum() == 0
         ), f"Nan found in scales: {best_scales}"
 
-        return best_scales.detach()
+        return best_scales.detach() if is_rbln_available() else best_scales.detach().cpu()
 
     @torch.no_grad()
     def _compute_loss(
@@ -721,13 +745,23 @@ class AWQModifier(Modifier, QuantizationMixin):
 
         # Compute the MSE loss for each batch
         for fp16_batch, int_w_batch in zip(fp16_outputs, int_w_outputs):
-            batch_loss = (
-                (fp16_batch - int_w_batch)
-                .view(-1)
-                .pow(2)
-                .sum()
-                .item()
-            )
+            if is_rbln_available():
+                batch_loss = (
+                    (fp16_batch - int_w_batch)
+                    .view(-1)
+                    .pow(2)
+                    .sum()
+                    .item()
+                )
+            else:
+                batch_loss = (
+                    (fp16_batch.to(device) - int_w_batch.to(device))
+                    .view(-1)
+                    .float()
+                    .pow(2)
+                    .sum()
+                    .item()
+                )
             loss += batch_loss
             num_elements += fp16_batch.numel()
 
@@ -792,7 +826,7 @@ def _accumulate_mean(
     inp: torch.Tensor,
     prev_mean_and_count: Optional[Tuple[torch.FloatTensor, int]],
 ) -> Tuple[torch.FloatTensor, int]:
-    sum_added = inp.sum(dim=0)
+    sum_added = inp.sum(dim=0) if not is_rbln_available() else inp.float().sum(dim=0)
     num_added = inp.size(0)
     if prev_mean_and_count is None:
         return sum_added / num_added, num_added

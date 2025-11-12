@@ -45,7 +45,6 @@ def get_recipe(fp8_enabled):
         SparseGPTModifier(
             sparsity=0.5,
             mask_structure="2:4",
-            sequential_update=True,
             targets=[r"re:model.layers.\d*$"],
         )
     ]
@@ -103,7 +102,9 @@ oneshot(
 # Validate the compressed model
 print("\n========== SAMPLE GENERATION ==============")
 dispatch_for_generation(model)
-input_ids = tokenizer("Hello my name is", return_tensors="pt").input_ids.to("cuda")
+input_ids = tokenizer("Hello my name is", return_tensors="pt").input_ids.to(
+    model.device
+)
 output = model.generate(input_ids, max_new_tokens=100)
 print(tokenizer.decode(output[0]))
 print("==========================================\n")

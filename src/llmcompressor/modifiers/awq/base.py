@@ -147,8 +147,10 @@ class AWQModifier(Modifier, QuantizationMixin):
     _target_modules: List[str] = PrivateAttr(default_factory=list)
     _compiled_modules: Dict[Module, Module] = PrivateAttr(default_factory=dict)
 
+    # NOTE: different name chosen to avoid collision with
+    # QuantizationMixin.validate_model_after, which must be called first
     @model_validator(mode="after")
-    def validate_model_after(model: "AWQModifier") -> "AWQModifier":
+    def validate_awq_after(model: "AWQModifier") -> "AWQModifier":
         """
         Confirm only one configuration for group_size, symmetric, and num_bits,
         as AWQ algorithm depends on it
@@ -276,8 +278,10 @@ class AWQModifier(Modifier, QuantizationMixin):
 
         self.ended_ = True
 
-        modules = list(state.model.modules())
-        for module in tqdm(modules, desc="Calibrating weights"):
+        for _, module in tqdm(
+            match_named_modules(state.model, self.targets, self.ignore),
+            desc="Calibrating weights",
+        ):
             update_weight_zp_scale(module)
 
         QuantizationMixin.end_calibration(self, state.model)
@@ -409,7 +413,7 @@ class AWQModifier(Modifier, QuantizationMixin):
             ):
                 self._smooth_activation_means[smooth_name] = _accumulate_mean(
                     # Assume that first argument is the input
-                    args[0].detach().squeeze() if is_rbln_available() else args[0].cpu().detach().squeeze(),
+                    args[0].abs().detach().squeeze() if is_rbln_available() else args[0].cpu().abs().detach().squeeze(),
                     self._smooth_activation_means.get(smooth_name, None),
                 )
 
@@ -554,6 +558,20 @@ class AWQModifier(Modifier, QuantizationMixin):
                         f"Skipping smooth_layer {mapping.smooth_name}, no activations "
                         "found to scale. This can occasionally occur in MoE models "
                         "when certain experts are not activated by calibration samples."
+                    )
+                    del self._smooth_activation_means[mapping.smooth_name]
+                    continue
+                if not all(
+                    [fp16_output.isfinite().all() for fp16_output in fp16_outputs]
+                ):
+                    logger.warning(
+                        f"Skipping smooth_layer {mapping.smooth_name}, NaN or inf "
+                        "outputs found during forward pass of the parent module "
+                        f"{mapping.parent_name}. The model is either generating NaN "
+                        "output with provided calibration data set, or the mappings "
+                        "are incorrectly set and modifying the model in undesired "
+                        "ways. If you encounter this consistently, raise an issue at "
+                        "https://github.com/vllm-project/llm-compressor/issues"
                     )
                     del self._smooth_activation_means[mapping.smooth_name]
                     continue

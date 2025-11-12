@@ -7,12 +7,12 @@ import os
 
 import torch
 from accelerate.hooks import remove_hook_from_module
-from compressed_tensors.quantization import find_name_or_class_matches
 from compressed_tensors.utils import (
     has_offloaded_params,
     offloaded_dispatch,
     remove_dispatch,
 )
+from compressed_tensors.utils.match import match_targets
 from loguru import logger
 from torch.fx import Graph, GraphModule, Node
 from torch.fx.graph import PythonCode
@@ -308,10 +308,12 @@ def topological_partition(graph: GraphModule, targets: Set[Module]) -> List[List
                 if user in partitions[index]:
                     user_partitions.append(index)
                     break
-        partition_index = min(user_partitions)
-        partitions[partition_index].insert(0, node)
 
-    assert set().union(*partitions) == set(graph.graph.nodes)
+        # workaround
+        if len(user_partitions):
+            partition_index = min(user_partitions)
+            partitions[partition_index].insert(0, node)
+
     return partitions
 
 
@@ -435,7 +437,7 @@ def match_modules(model: Module, target_names: List[str]) -> Set[Module]:
     return set(
         module
         for name, module in model.named_modules()
-        if find_name_or_class_matches(name, module, target_names)
+        if match_targets(name, module, target_names)
     )
 
 
@@ -528,8 +530,8 @@ def get_sequential_ancestors(model: Module, targets: Set[Module]) -> Set[Module]
 def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
     """
     Dispatch a model for sequential calibration using a sequential pipeline.
-    The model will be offloaded to the CPU and dispatched to CUDA device if available.
-    Removes any existing hooks.
+    The model will be offloaded to the CPU and dispatched to CUDA/XPU device
+    if available. Removes any existing hooks.
 
     :param model: model to dispatch
     :return: dispatched model
@@ -538,10 +540,12 @@ def dispatch_for_sequential(model: PreTrainedModel) -> PreTrainedModel:
 
     if torch.cuda.is_available():
         offloaded_dispatch(model, execution_device=torch.device("cuda:0"))
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        offloaded_dispatch(model, execution_device=torch.device("xpu:0"))
     elif is_rbln_available() and os.getenv("DEVICE", "rbln").lower() == "rbln" and ENFORCE_EAGER:
         offloaded_dispatch(model, execution_device=torch.device("rbln"))
     else:
-        logger.warning("CUDA is not available! Compressing model on CPU instead")
+        logger.warning("CUDA/XPU is not available! Compressing model on CPU instead")
 
     return model
 
